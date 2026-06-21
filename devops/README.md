@@ -25,5 +25,5 @@ Entram aqui prompts relacionados a:
 - [diagnosticar-causa-raiz-incidente](./diagnosticar-causa-raiz-incidente/) — Analisa artefatos heterogêneos de um incidente (config, métricas e logs) e produz diagnóstico de causa-raiz com linha do tempo, cadeia causal, mitigação imediata e correção definitiva.
 - [endurecer-networkpolicy-kubernetes](./endurecer-networkpolicy-kubernetes/) — Transforma uma NetworkPolicy permissiva em uma política endurecida com default-deny, liberando apenas fluxos explicitamente legítimos, com verificação iterativa.
 - [migrar-pipeline-batch-para-event-driven](./migrar-pipeline-batch-para-event-driven/) — Cadeia de três prompts encadeados para diagnosticar, planejar e executar a migração de um pipeline batch para um modelo event-driven de forma incremental e reversível.
-- [nota-de-triagem-alerta](./nota-de-triagem-alerta/) — Transforma um alerta cru em uma nota de triagem padronizada com impacto, hipótese inicial, ação imediata e escalonamento.
+- [nota-de-triagem](./nota-de-triagem/) — Transforma um alerta cru em uma nota de triagem padronizada com impacto, hipótese inicial, ação imediata e escalonamento.
 - [triagem-de-pods](./triagem-de-pods/) — Analisa um snapshot de cluster Kubernetes e identifica pods problemáticos com causa provável, evidência e próxima ação do plantão.
