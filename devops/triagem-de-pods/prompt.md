@@ -1,7 +1,7 @@
 ---
 nome: Triagem de pods Kubernetes
 descricao: Analisa um snapshot de cluster Kubernetes e identifica pods problemáticos com causa provável, evidência e próxima ação do plantão.
-versao: 1.0.1
+versao: 1.0.2
 tags: [kubernetes, sre, devops, incidente, pods]
 inputs:
   - nome: snapshot_cluster
