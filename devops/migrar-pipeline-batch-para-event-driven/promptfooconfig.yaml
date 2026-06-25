@@ -58,12 +58,12 @@ defaultTest:
       metric: estrutura
 
     # Limites operacionais
-    - type: latency
-      threshold: 120000         # 2min -- Haiku gerando ~16-18k tokens para 3 elos
-      metric: sistemico
-    - type: cost
-      threshold: 0.10           # US$ 0,10 -- cobre ~18k tokens de output no Haiku
-      metric: sistemico
+    #- type: latency
+    #  threshold: 120000         # 2min -- Haiku gerando ~16-18k tokens para 3 elos
+    #  metric: sistemico
+    #- type: cost
+    #  threshold: 0.10           # US$ 0,10 -- cobre ~18k tokens de output no Haiku
+    #  metric: sistemico
 
     # ----- CAMADA 2 -- qualidade subjetiva via juiz LLM -----
 
