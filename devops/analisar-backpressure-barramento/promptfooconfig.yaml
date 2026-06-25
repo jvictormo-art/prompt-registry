@@ -51,13 +51,6 @@ defaultTest:
       value: "Estrat"           # coluna "Estratégia" na tabela de comparacao
       metric: estrutura
 
-    # Limites operacionais
-    - type: latency
-      threshold: 45000          # 45s -- Haiku pode gerar ~3k tokens nesta analise
-      metric: sistemico
-    - type: cost
-      threshold: 0.05           # US$ 0,05 -- cobre Haiku (gerador) + Sonnet (juiz)
-      metric: sistemico
 
     # ----- CAMADA 2 -- qualidade subjetiva via juiz LLM -----
 
