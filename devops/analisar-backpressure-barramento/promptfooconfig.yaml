@@ -1,0 +1,105 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+description: "Gate de qualidade -- analise de backpressure (gerador Haiku, juiz Sonnet)"
+
+# Pirâmide de avaliação combinada:
+#   Camada 1 -- assertions determinísticas (gate barato: estrutura, latencia, custo)
+#   Camada 2 -- llm-rubric com juiz Sonnet (gate caro: 4 criterios 0-2, corte >= 6/8)
+#
+# Calibracao de referencia (cenario Relay 2.5x):
+#   C1=2  C2=2  C3=2  C4=2  -> 8/8 para resposta completa
+#   Gate em >= 6/8 (threshold 0.75); tolerancia <= 1 ponto/criterio.
+#   Rubrica completa: prompt.rubric.md  |  Prompt do juiz: prompt.judge.xml
+
+prompts:
+  - file://prompt.md
+
+providers:
+  - id: anthropic:messages:claude-haiku-4-5-20251001
+    label: claude-gerador
+    config:
+      temperature: 0
+      max_tokens: 8000
+
+defaultTest:
+  options:
+    provider: anthropic:messages:claude-sonnet-4-6   # JUIZ != GERADOR (anti self-preference)
+    rubricPrompt: file://prompt.judge.xml
+  assert:
+    # ----- CAMADA 1 -- determinísticos -----
+
+    # Secoes obrigatorias do formato de saida do prompt
+    - type: icontains
+      value: "Diagnostico"
+      metric: estrutura
+    - type: icontains
+      value: "Restricoes"
+      metric: estrutura
+    - type: icontains
+      value: "Comparacao"
+      metric: estrutura
+    - type: icontains
+      value: "Trade-offs"
+      metric: estrutura
+    - type: icontains
+      value: "Recomendacao"
+      metric: estrutura
+
+    # Tabela markdown obrigatoria (>= 3 estrategias exigidas pelo prompt)
+    - type: icontains
+      value: "Estrategia"
+      metric: estrutura
+
+    # Limites operacionais
+    - type: latency
+      threshold: 20000          # 20s
+      metric: sistemico
+    - type: cost
+      threshold: 0.03           # US$ 0,03
+      metric: sistemico
+
+    # ----- CAMADA 2 -- qualidade subjetiva via juiz LLM -----
+
+    # Aplica a rubrica de 4 criterios (0-2 cada, corte >= 6/8) via prompt.judge.xml.
+    # `value` e descricao visivel no Web UI; a rubrica real esta no judge.xml.
+    - type: llm-rubric
+      value: "Aplicar a rubrica de 4 criterios (0-2 cada, corte >= 6/8) do prompt.judge.xml e retornar JSON estrito com pass/score/reason."
+      threshold: 0.75
+      metric: qualidade_juiz
+
+tests:
+  - description: "Relay 2.5x -- pico de tenant saturando consumidores com SLAs diferentes"
+    vars:
+      ESTADO_DO_SISTEMA: |
+        Barramento: Relay (Apache Kafka, 12 particoes, topico sentinel-events)
+        Throughput sustentado: 80k msgs/s (baseline normal)
+        Pico observado: 200k msgs/s (spike de tenant em onboarding, dura ~90min)
+        Retencao configurada: 6h
+        Lag medio em operacao normal: < 50ms
+
+        Consumidores (todos leem o mesmo topico via consumer groups):
+          - Sentinel API (cg-sentinel): 60k msgs/s de capacidade; SLA de lag < 500ms
+          - Forge warehouse (cg-forge): 80k msgs/s de capacidade; tolerancia de lag ate 20min
+          - Cerebro indexacao (cg-cerebro): 30k msgs/s de capacidade; tolerancia de lag ate 5min
+
+      RESTRICOES_DO_TIME: |
+        Garantias absolutas (inegociaveis):
+          - Zero perda de mensagem para Sentinel e Forge (requisito de auditoria regulatoria)
+          - Sentinel: lag nunca acima de 500ms durante pico (SLA contratual com clientes)
+
+        Flexiveis:
+          - Cerebro: perda de ate 0,5% tolerada em pico extremo (dados sao recalculaveis)
+          - Forge: lag de ate 20min aceitavel
+          - Orcamento de infra: maximo +40% sobre baseline atual
+          - Prazo de implementacao: 2 semanas, sem downtime
+
+        Restricao historica:
+          - Tentativa anterior de rate limiting no produtor causou rejeicao silenciosa (bug) em
+            2025-11 -- time tem receio do padrao e exige revisao de seguranca adicional antes
+            de reintroduzir qualquer forma de rate limiting
+
+      ESTRATEGIAS_CANDIDATAS: |
+        1. Rate limiting no produtor (Relay rejeita mensagens acima de 80k msgs/s)
+        2. Consumer-side circuit breaker (consumidores pausam quando lag > threshold)
+        3. Escalonamento horizontal dos consumidores (adicionar replicas de Sentinel e Cerebro)
+        4. Dead letter queue com reprocessamento (mensagens rejeitadas vao para DLQ,
+           reprocessadas apos lag cair abaixo do threshold)
