@@ -18,7 +18,7 @@ providers:
     label: claude-gerador
     config:
       temperature: 0
-      max_tokens: 12000
+      max_tokens: 20000   # cadeia de 3 elos gera ~14-18k tokens
 
 defaultTest:
   options:
@@ -59,10 +59,10 @@ defaultTest:
 
     # Limites operacionais
     - type: latency
-      threshold: 60000          # 60s (cadeia de 3 elos, output longo)
+      threshold: 120000         # 2min -- Haiku gerando ~16-18k tokens para 3 elos
       metric: sistemico
     - type: cost
-      threshold: 0.05           # US$ 0,05
+      threshold: 0.10           # US$ 0,10 -- cobre ~18k tokens de output no Haiku
       metric: sistemico
 
     # ----- CAMADA 2 -- qualidade subjetiva via juiz LLM -----
