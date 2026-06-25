@@ -100,14 +100,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Cache promptfoo responses
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/promptfoo
+          key: ${{ runner.os }}-promptfoo-${{ matrix.config }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-promptfoo-${{ matrix.config }}-
+            ${{ runner.os }}-promptfoo-
+
       - name: Run promptfoo eval
-        uses: promptfoo/github-action@v1
+        uses: promptfoo/promptfoo-action@v1
         with:
           config: ${{ matrix.config }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          # O cache de respostas do promptfoo é desabilitado em CI para garantir
-          # resultados frescos. Remova a linha abaixo para habilitar e reduzir
-          # o custo em reexecuções manuais.
-          cache: false
+          cache-path: ~/.cache/promptfoo
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
