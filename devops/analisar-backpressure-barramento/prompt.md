@@ -1,7 +1,7 @@
 ---
 nome: Análise comparativa de backpressure em barramento de eventos
 descricao: Recebe um cenário de sobrecarga de barramento de eventos e produz análise comparativa de estratégias de backpressure com recomendação fundamentada em trade-offs.
-versao: 1.0.0
+versao: 1.0.1
 tags: [sre, arquitetura, backpressure, barramento, confiabilidade]
 inputs:
   - nome: ESTADO_DO_SISTEMA
