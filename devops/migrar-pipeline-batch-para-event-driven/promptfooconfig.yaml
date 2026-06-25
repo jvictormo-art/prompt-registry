@@ -11,7 +11,7 @@ description: "Gate de qualidade -- cadeia de migracao batch para event-driven (g
 #   Rubrica completa: prompt.rubric.md  |  Prompt do juiz: prompt.judge.xml
 
 prompts:
-  - file://prompt.md
+  - file://prompt-eval.md   # espelho de prompt.md com {{...}} escapado para o Nunjucks
 
 providers:
   - id: anthropic:messages:claude-haiku-4-5-20251001

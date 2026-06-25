@@ -54,9 +54,12 @@ tests:
       - type: icontains
         value: "Egress"
 
-      # 2. Sem regra allow-all — a saída não deve conter "- {}"
+      # 2. Sem regra allow-all dentro de blocos YAML — o modelo pode citar "- {}" no
+      #    diagnóstico textual, então a verificação se restringe ao conteúdo dos blocos de código
       - type: javascript
-        value: "!output.includes('- {}')"
+        value: |
+          const blocks = (output.match(/```[\s\S]*?```/g) || []).join('\n');
+          return !blocks.includes('- {}');
 
       # 3. Egress para Forge (5432) e Cerebro (9200); ingress do Relay e do API gateway
       - type: icontains
