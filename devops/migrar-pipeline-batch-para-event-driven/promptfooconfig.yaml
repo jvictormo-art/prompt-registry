@@ -1,0 +1,253 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+description: "Gate de qualidade -- cadeia de migracao batch para event-driven (gerador Haiku, juiz Sonnet)"
+
+# Piramide de avaliacao combinada:
+#   Camada 1 -- assertions deterministicas (gate barato: estrutura, latencia, custo)
+#   Camada 2 -- llm-rubric com juiz Sonnet (gate caro: 4 criterios 0-2, corte >= 6/8)
+#
+# Calibracao de referencia (cenario Forge daily-ingest):
+#   C1=2  C2=2  C3=2  C4=2  -> 8/8 para cadeia completa
+#   Gate em >= 6/8 (threshold 0.75); tolerancia <= 1 ponto/criterio.
+#   Rubrica completa: prompt.rubric.md  |  Prompt do juiz: prompt.judge.xml
+
+prompts:
+  - file://prompt.md
+
+providers:
+  - id: anthropic:messages:claude-haiku-4-5-20251001
+    label: claude-gerador
+    config:
+      temperature: 0
+      max_tokens: 12000
+
+defaultTest:
+  options:
+    provider: anthropic:messages:claude-sonnet-4-6   # JUIZ != GERADOR (anti self-preference)
+    rubricPrompt: file://prompt.judge.xml
+  assert:
+    # ----- CAMADA 1 -- deterministicos -----
+
+    # Secoes obrigatorias do Elo 1
+    - type: icontains
+      value: "acoplamentos"
+      metric: estrutura
+    - type: icontains
+      value: "Handoff"
+      metric: estrutura
+
+    # Secoes obrigatorias do Elo 3
+    - type: icontains
+      value: "Checklist"
+      metric: estrutura
+    - type: icontains
+      value: "Rollback"
+      metric: estrutura
+    - type: icontains
+      value: "Monitoramento"
+      metric: estrutura
+
+    # Conteudo especifico do cenario Forge / Fase 2
+    - type: icontains
+      value: "hourly_aggregates"
+      metric: estrutura
+    - type: icontains
+      value: "dual-write"
+      metric: estrutura
+    - type: icontains
+      value: "streaming"
+      metric: estrutura
+
+    # Limites operacionais
+    - type: latency
+      threshold: 60000          # 60s (cadeia de 3 elos, output longo)
+      metric: sistemico
+    - type: cost
+      threshold: 0.05           # US$ 0,05
+      metric: sistemico
+
+    # ----- CAMADA 2 -- qualidade subjetiva via juiz LLM -----
+
+    # Aplica a rubrica de 4 criterios (0-2 cada, corte >= 6/8) via prompt.judge.xml.
+    # `value` e descricao visivel no Web UI; a rubrica real esta no judge.xml.
+    - type: llm-rubric
+      value: "Aplicar a rubrica de 4 criterios (0-2 cada, corte >= 6/8) do prompt.judge.xml e retornar JSON estrito com pass/score/reason."
+      threshold: 0.75
+      metric: qualidade_juiz
+
+tests:
+  - description: "Forge daily-ingest -- migracao batch->streaming com dedup stateful e SLA de billing"
+    vars:
+      SNAPSHOT_FORGE: |
+        Pipeline: forge-daily-ingest (Airflow 2.7, Spark 3.4 no GKE)
+        Origem: topico Kafka relay-events (Relay platform), retencao 24h, 800M eventos/dia (~9.200 eventos/s media)
+        Destino: BigQuery dataset forge_prod, tabela forge.hourly_aggregates (particionada por data, schema versionado v3)
+        Agendamento: job Spark roda diariamente as 05:00 UTC, janela de 00:00-23:59 UTC do dia anterior
+
+        Etapas de transformacao:
+          1. Leitura batch dos offsets Kafka do dia anterior (SparkKafkaConsumer, modo startingOffsets/endingOffsets)
+          2. Deduplicacao por (tenant_id, event_id, event_ts) -- janela de 24h, estado em memoria Spark
+          3. Enriquecimento de tenant (join estatico com tabela tenant_registry no BigQuery, cache 1h)
+          4. Agregacao horaria: COUNT, SUM(value), percentis p50/p95/p99 por (tenant_id, metric_type, hora)
+          5. Escrita incremental no BigQuery (MERGE em forge.hourly_aggregates, chave: tenant_id + hora)
+          6. Atualizacao de metadados de particao (tabela forge.partition_log, registra janela processada)
+
+        Pontos frageis:
+          - Job roda uma vez por dia: falha = reprocessamento manual de 24h de dados
+          - Estado de dedup em memoria: restart do executor perde estado parcial e causa duplicatas
+          - MERGE no BigQuery: operacao cara, travamento de tabela durante escrita (~18min)
+          - Nenhum mecanismo de backfill automatico para particoes corrompidas
+
+        Dependentes a jusante:
+          - Sentinel API: consome forge.hourly_aggregates para calculos de billing por tenant; precisa dos dados ate 07:00 UTC
+          - Billing job (cron domingo 23:00 UTC): fecha o ciclo semanal de faturamento; requer forge.hourly_aggregates completo para a semana
+          - Forge UI (dashboards): consome a mesma tabela para exibir metricas; tolerancia de 2h de atraso
+
+      SLAS_E_DEPENDENTES: |
+        Sentinel API:
+          - Janela critica: dados de forge.hourly_aggregates devem estar disponiveis ate 07:00 UTC todos os dias
+          - Impacto de atraso: calculo de billing com dados desatualizados gera contestacoes de clientes
+          - Contrato: SLA de 99,9% de disponibilidade dos dados na janela diaria
+
+        Billing job (domingo 23:00 UTC):
+          - Janela critica: fechamento semanal -- exige forge.hourly_aggregates completo e sem lacunas para os 7 dias da semana
+          - Impacto de atraso ou lacuna: faturamento incorreto, impacto financeiro direto e obrigacao contratual
+          - Restricao inviolavel: integridade dos dados de billing nao pode ser comprometida em nenhuma fase da migracao
+
+        Forge UI:
+          - Tolerancia: atraso de ate 2h aceitavel
+          - Impacto de atraso: degradacao da experiencia do usuario em dashboards; sem impacto financeiro direto
+          - Prioridade: pode ser sacrificado temporariamente se necessario
+
+      DIAGNOSTICO_FORGE: |
+        ## Mapa de acoplamentos
+
+        - Sentinel API: consome forge.hourly_aggregates via BigQuery SELECT direto, filtrando por data de particao; qualquer mudanca de schema (nomes de coluna, tipos) ou de particao quebra as queries do Sentinel imediatamente [fato].
+        - Billing job: depende do conjunto completo das 168 linhas/tenant da semana (7 dias x 24 horas); gap de qualquer hora causa faturamento incorreto; nao tem mecanismo de retry -- falha e silenciosa [fato + inferencia: ausencia de retry nao descrita no snapshot].
+        - Forge UI: usa a mesma tabela com filtro por data; tolerante a eventual consistency de ate 2h; nao e dependente critico para a migracao [fato].
+
+        ## Inventario de etapas
+
+        - Etapa 1 -- Leitura batch de offsets Kafka: INERENTEMENTE BATCH -- usa startingOffsets/endingOffsets para delimitar a janela de 24h; sem equivalente direto em modo continuo sem redesenho da logica de ingestao.
+        - Etapa 2 -- Deduplicacao (tenant_id, event_id, event_ts): EXIGE REESCRITA STATEFUL -- estado de 24h em memoria Spark nao e portavel para streaming; requer redesenho com estado gerenciado (ex: RocksDB no Flink ou dedup com TTL no Kafka Streams).
+        - Etapa 3 -- Enriquecimento de tenant: TRIVIALMENTE CONVERTIVEL -- join estatico com cache de 1h; pode ser feito row-by-row ou em micro-batch sem mudanca logica.
+        - Etapa 4 -- Agregacao horaria (COUNT/SUM/percentis): EXIGE REESCRITA STATEFUL (windowed) -- janela de 1h acumula estado; requer tumbling window com trigger de fim de janela; semantica de late data precisa ser definida.
+        - Etapa 5 -- Escrita MERGE no BigQuery: TRIVIALMENTE CONVERTIVEL -- pode ser substituida por streaming insert ou MERGE periodico de micro-batch sem mudanca de schema.
+        - Etapa 6 -- Atualizacao de metadados de particao: TRIVIALMENTE CONVERTIVEL -- escrita simples em tabela de controle; pode seguir qualquer trigger.
+
+        ## Riscos do modelo atual
+
+        - Falha total do job: sem dado novo em forge.hourly_aggregates ate reprocessamento manual; Sentinel e Billing ficam desabastecidos [fato].
+        - Perda de estado de dedup em restart: duplicatas silenciosas na tabela de destino; detectavel apenas por auditoria externa [fato].
+        - Travamento do BigQuery durante MERGE (~18min): janela de indisponibilidade para leituras concorrentes do Sentinel [fato].
+        - Ausencia de backfill automatico: particoes corrompidas exigem intervencao manual; risco elevado pos-migracao [fato].
+
+        ## Restricoes inviolaveis
+
+        - Schema de forge.hourly_aggregates (v3): nomes de coluna, tipos e particao por data nao podem ser alterados sem versionamento acordado com Sentinel e Billing.
+        - Integridade do Billing job: nenhuma fase de migracao pode gerar gap ou duplicata nas agregacoes horarías da semana de fechamento.
+        - Janela de disponibilidade do Sentinel: dados devem estar em forge.hourly_aggregates ate 07:00 UTC; a migracao nao pode ampliar esta janela.
+        - Zero downtime: nenhuma fase pode derrubar a ingestao existente sem garantia de fallback imediato.
+
+        ## Lacunas de informacao
+
+        - Custo e latencia do streaming insert vs MERGE no BigQuery para o volume de 800M eventos/dia nao consta no snapshot.
+        - Topologia de particoes no Relay: se relay-events e particionado por tenant ou por tipo de evento -- impacta paralelismo da dedup stateful.
+        - Mecanismo atual de deteccao de duplicatas pos-escrita: necessario para definir a validacao de equivalencia na Fase 2.
+        - Definicao de late data aceita pela agregacao horaria: eventos atrasados > X min sao descartados ou reprocessados?
+
+        ### Handoff
+
+        - Etapas 3, 5, 6 sao trivialmente convertiveis; Etapas 2 e 4 exigem reescrita stateful; Etapa 1 e inerentemente batch.
+        - Schema v3 e particao por data sao restricoes inviolaveis -- o planejamento deve preserva-los em todas as fases.
+        - Billing job e o dependente mais critico: nenhuma fase pode comprometer as 168 horas semanais.
+        - Estado de dedup e a peca mais complexa; deve ficar para uma fase tardia, apos validacao do restante.
+        - Falta definir: (a) politica de late data, (b) topologia de particoes do Relay, (c) custo de streaming insert no BigQuery.
+        - Sentinel tem janela dura de 07:00 UTC; qualquer novo design precisa garantir essa entrega.
+
+      OBJETIVO_ALVO: |
+        Migrar o pipeline forge-daily-ingest do modelo batch (job diario) para um modelo event-driven (consumo continuo do topico relay-events), mantendo:
+        - Todos os dependentes (Sentinel API, Billing job, Forge UI) servidos sem interrupcao durante a transicao
+        - Schema de forge.hourly_aggregates v3 intacto (zero breaking changes)
+        - Migracao reversivel em qualquer ponto, com rollback para o batch em menos de 30 min
+        - Cada fase entregando valor isolado e verificavel antes de avancar para a proxima
+
+      ESTRATEGIA_FASEADA: |
+        ## Sequencia de fases
+
+        ### Fase 1 -- Shadow run das etapas triviais
+
+        Objetivo: validar que as etapas trivialmente convertiveis (3, 5, 6) produzem output identico quando executadas em modo streaming, sem tocar a producao.
+
+        Etapas envolvidas: 3 (enriquecimento), 5 (escrita BQ), 6 (metadados de particao).
+        O que passa para streaming: pipeline Flink paralelo ao batch, consumindo relay-events em tempo real, executando Etapas 3, 5, 6 e escrevendo em tabela shadow (forge.hourly_aggregates_shadow).
+        O que permanece em batch: pipeline Airflow+Spark original continua rodando normalmente; forge.hourly_aggregates de producao nao e tocada.
+        Como dependentes sao preservados: Sentinel, Billing e Forge UI continuam lendo forge.hourly_aggregates de producao; shadow e invisivel para eles.
+
+        Criterio de avanco: shadow e producao com divergencia < 0,1% em COUNT e SUM por (tenant_id, hora) por 7 dias consecutivos.
+        Gatilho de rollback: divergencia > 1% em qualquer dia, ou erro critico no job Flink. Reverter: desligar job Flink shadow; batch nao foi alterado, zero impacto.
+
+        ### Fase 2 -- Dual-write na agregacao horaria
+
+        Objetivo: habilitar o pipeline streaming como segundo writer para forge.hourly_aggregates em modo dual-write com o batch, validando equivalencia de dados em producao.
+
+        Etapas envolvidas: 4 (agregacao horaria) + 3, 5, 6 (ja validadas na Fase 1).
+        O que passa para streaming: Flink executa Etapas 3+4+5+6 em producao, escrevendo em forge.hourly_aggregates em paralelo ao batch; dedup (Etapa 2) ainda e feita pelo batch.
+        O que permanece em batch: pipeline Airflow+Spark completo continua rodando; Etapas 1+2 permanecem no batch como fonte autoritativa de eventos deduplicados.
+        Como dependentes sao preservados: Sentinel e Billing continuam lendo forge.hourly_aggregates; batch e autoritativo em caso de divergencia de MERGE.
+
+        Criterio de avanco: streaming e batch convergem em forge.hourly_aggregates com divergencia < 0,01% por 14 dias; Billing job valida em ambiente staging consumindo apenas streaming.
+        Gatilho de rollback: divergencia > 0,1% em qualquer hora, ou CircuitBreaker do Sentinel disparado, ou falha no Billing staging. Reverter: desativar dual-write streaming; batch volta a ser unico writer; SLA de 07:00 UTC preservado.
+        Ponto-de-nao-retorno: migracao do Billing job de producao para consumir streaming como autoritativo (inicio da Fase 3).
+
+        ### Fase 3 -- Migracao da dedup stateful e desativacao do batch
+
+        Objetivo: migrar a deduplicacao (Etapa 2) para Flink com estado gerenciado, eliminar dependencia do batch e desativar o pipeline Airflow+Spark.
+
+        Etapas envolvidas: 2 (dedup stateful) + Etapa 1 (ingestao continua substituindo leitura batch).
+        O que passa para streaming: Flink assume dedup com RocksDB state backend e TTL de 25h; ingestao passa a ser continua.
+        O que permanece em batch: nada -- batch e desativado ao final desta fase.
+        Como dependentes sao preservados: Sentinel e Billing ja consomem streaming (validado na Fase 2); desativacao do batch nao afeta nenhum dependente.
+
+        Criterio de avanco: 30 dias sem regressao de dados; Billing job de producao estavel por 2 ciclos semanais completos.
+        Gatilho de rollback: qualquer anomalia de duplicata ou gap nas agregacoes. Reverter: reativar batch (DAG mantido em pausa); Flink entra em modo shadow ate investigacao.
+
+        ## Estrategia de coexistencia
+
+        Fase 1: batch e unico writer de producao; Flink e shadow sem impacto nos dependentes.
+        Fase 2: dual-write com batch autoritativo em caso de conflito; streaming valida mas nao e confiado sozinho.
+        Fase 3: streaming assume como unico writer; batch fica em stand-by por 30 dias antes de ser desativado definitivamente.
+
+        ## Riscos residuais por fase
+
+        - Fase 1: custo extra de um job Flink paralelo por 7+ dias.
+        - Fase 2: latencia do Flink para janelas de 1h pode gerar dados atrasados para o Sentinel antes das 07:00 UTC -- requer teste de carga previo.
+        - Fase 3: migracao da dedup e a etapa mais arriscada; late data policy precisa estar definida antes de iniciar.
+
+        ### Handoff
+
+        Fase 1 -> Fase 2:
+          - Confirmar que shadow validou Etapas 3, 5, 6 por 7 dias com divergencia < 0,1%
+          - Projetar e testar logica de tumbling window de 1h (Etapa 4) no Flink com dados reais
+          - Definir politica de resolucao de conflito de MERGE (batch autoritativo na Fase 2)
+
+        Fase 2 -> Fase 3:
+          - Staging do Billing job validado consumindo apenas streaming por >= 1 ciclo semanal
+          - forge.hourly_aggregates convergindo com divergencia < 0,01% por 14 dias
+          - Estado do Flink RocksDB dimensionado para volume de dedup de 25h
+
+        Fase 3:
+          - Airflow DAG desativado (nao deletado) e mantido em stand-by por 30 dias
+          - Late data policy documentada e implementada na janela Flink
+
+      FASE_ALVO: "Fase 2"
+
+      CONTEXTO_OPERACIONAL: |
+        Orquestrador batch: Apache Airflow 2.7 (DAG: forge-daily-ingest, schedule: 0 5 * * *)
+        Engine batch: Apache Spark 3.4 (cluster GKE Spot, 8 workers de 16 vCPU/64GB)
+        Engine streaming: Apache Flink 1.18 (cluster GKE on-demand, state backend: RocksDB)
+        Data warehouse: Google BigQuery (dataset forge_prod, regiao us-central1)
+        Barramento de eventos: Relay (Apache Kafka 3.6, topico relay-events, 12 particoes, retencao 24h)
+        IaC: Terraform (modulos gke-cluster, bigquery-dataset, kafka-topic)
+        CI/CD: ArgoCD (repositorio de manifests: aegis-infra/gitops)
+        Monitoramento: Datadog (metricas de lag Kafka, latencia de queries BigQuery, heap Flink)
+        Schema registry: Confluent Schema Registry (subject: relay-events-value v4)
