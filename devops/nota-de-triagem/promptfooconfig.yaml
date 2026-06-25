@@ -27,7 +27,7 @@ defaultTest:
     - type: javascript
       value: "output.trim().split('\\n').length <= 8"
     - type: latency
-      threshold: 5000
+      threshold: 15000        # Sonnet: 3-8s para 5 linhas; 5000ms era apertado demais
     - type: cost
       threshold: 0.01
 

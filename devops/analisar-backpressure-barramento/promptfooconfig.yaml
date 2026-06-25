@@ -27,26 +27,28 @@ defaultTest:
   assert:
     # ----- CAMADA 1 -- determinísticos -----
 
-    # Secoes obrigatorias do formato de saida do prompt
+    # Secoes obrigatorias do formato de saida do prompt.
+    # Valores usam a forma acentuada prescrita pelo prompt.md para evitar
+    # falso negativo: icontains e case-insensitive mas nao accent-insensitive.
     - type: icontains
-      value: "Diagnostico"
+      value: "gargalo"          # "## Diagnóstico do gargalo"
       metric: estrutura
     - type: icontains
-      value: "Restricoes"
+      value: "determinantes"    # "## Restrições determinantes"
       metric: estrutura
     - type: icontains
-      value: "Comparacao"
+      value: "Compara"          # "## Comparação de estratégias"
       metric: estrutura
     - type: icontains
       value: "Trade-offs"
       metric: estrutura
     - type: icontains
-      value: "Recomendacao"
+      value: "Recomend"         # "## Recomendação"
       metric: estrutura
 
     # Tabela markdown obrigatoria (>= 3 estrategias exigidas pelo prompt)
     - type: icontains
-      value: "Estrategia"
+      value: "Estrat"           # coluna "Estratégia" na tabela de comparacao
       metric: estrutura
 
     # Limites operacionais
